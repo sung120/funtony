@@ -138,7 +138,6 @@
           }
 
           if (playerId.value && nickname.value) {
-            // 從資料庫撈回該玩家的最新分數，防止重新整理洗掉
             const { data, error } = await db
               .from('players')
               .select('*')
@@ -149,9 +148,8 @@
               myScore.value = data.score || 0;
               inputName.value = data.name || nickname.value;
               joined.value = true;
-              startTime.value = Date.now(); // 重新整理後重計當次作答時間
+              startTime.value = Date.now(); 
             } else {
-              // 若資料庫查無此 ID，清除本地舊快取
               localStorage.removeItem('solo_wedding_pid');
               localStorage.removeItem('solo_wedding_name');
               playerId.value = '';
@@ -171,10 +169,10 @@
           
           startTime.value = Date.now();
           nickname.value = inputName.value.trim();
+          const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
 
-          // 使用 upsert 確保資料不被覆蓋洗掉
           await db.from('players').upsert([
-            { id: id, name: nickname.value, score: myScore.value }
+            { id: id, name: nickname.value, score: myScore.value, session_id: `開始於: ${nowStr}` }
           ]);
 
           localStorage.setItem('solo_wedding_pid', id);
@@ -195,7 +193,6 @@
             isCorrect.value = false;
           }
 
-          // 即時更新後端分數
           if (playerId.value) {
             await db
               .from('players')
@@ -237,26 +234,31 @@
             submitted.value = false;
             isCorrect.value = false;
           } else {
-            // 完整通關結算
             isFinished.value = true;
             
             if (startTime.value && playerId.value) {
               const totalSeconds = Math.floor((Date.now() - startTime.value) / 1000);
               timeSpentStr.value = `${totalSeconds} 秒`;
               
-              // 將最終分數與完成耗時（存入 session_id）同步寫入資料庫
+              const finishTimeStr = new Date().toLocaleString('zh-TW', { hour12: false });
+              
               await db
                 .from('players')
                 .update({ 
                   score: myScore.value,
-                  session_id: `耗時 ${totalSeconds} 秒`
+                  session_id: `完成於 ${finishTimeStr} (耗時 ${totalSeconds} 秒)`
                 })
                 .eq('id', playerId.value);
             }
           }
         };
 
-        const restartGame = () => {
+        // 重新挑戰時，強制開立全新 ID 與紀錄，避免分數與上一輪累加
+        const restartGame = async () => {
+          const newId = 'SOLO_' + Math.random().toString(36).substring(2, 9);
+          playerId.value = newId;
+          localStorage.setItem('solo_wedding_pid', newId);
+
           currentIndex.value = 0;
           myScore.value = 0;
           isFinished.value = false;
@@ -265,6 +267,12 @@
           isCorrect.value = false;
           startTime.value = Date.now();
           timeSpentStr.value = '';
+
+          const nowStr = new Date().toLocaleString('zh-TW', { hour12: false });
+
+          await db.from('players').upsert([
+            { id: newId, name: nickname.value, score: 0, session_id: `開始於: ${nowStr}` }
+          ]);
         };
 
         return {
