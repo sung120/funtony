@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TONY and YUWEN 婚禮有獎徵答 - 個人闖關版</title>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-pink-50 text-gray-800">
+
+  <div id="app" class="min-h-screen flex flex-col justify-center items-center p-4">
+    <div class="max-w-md w-full bg-white p-6 rounded-3xl shadow-2xl">
+      
+      <!-- 1. 登入畫面 -->
+      <div v-if="!joined" class="text-center">
+        <h2 class="text-3xl font-extrabold text-pink-600 mb-2">TONY & YUWEN 婚禮有獎徵答</h2>
+        <p class="text-gray-500 mb-4">請輸入您的姓名或桌號開始闖關！</p>
+        
+        <div class="bg-pink-50 border border-pink-200 p-3 rounded-xl mb-6 text-left text-sm text-pink-700">
+          <p class="font-bold mb-1">💡 闖關說明：</p>
+          <p>• 總共有 {{ questions.length }} 道題目。</p>
+          <p>• 點選選項後即時揭曉答案並累積積分！</p>
+        </div>
+
+        <input v-model="inputName" type="text" placeholder="例如：林小美 (第3桌)" class="w-full border-2 border-pink-200 p-3 rounded-xl mb-4 text-center text-lg focus:outline-none focus:border-pink-500">
+        <button @click="joinGame" class="w-full bg-pink-500 hover:bg-pink-600 text-white py-3 rounded-xl font-bold text-lg shadow-lg transition">開始闖關 🚀</button>
+      </div>
+
+      <!-- 2. 結算畫面 -->
+      <div v-else-if="isFinished" class="text-center py-6">
+        <div class="text-6xl mb-4">🏆</div>
+        <h2 class="text-3xl font-extrabold text-pink-600 mb-2">闖關成功！</h2>
+        <p class="text-gray-600 text-lg mb-4">謝謝 <span class="font-bold text-pink-600">{{ nickname }}</span> 的熱情參與！</p>
+        <div class="text-3xl font-extrabold text-pink-500 bg-pink-50 p-6 rounded-2xl border-2 border-pink-200 mb-6">
+          你的最終得分：{{ myScore }} 分
+        </div>
+        <button @click="restartGame" class="w-full bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-bold text-lg shadow">🔄 重新挑戰</button>
+      </div>
+
+      <!-- 3. 作答中畫面 -->
+      <div v-else-if="currentQuestion">
+        <div class="flex justify-between items-center mb-4 border-b pb-2">
+          <span class="font-bold text-pink-600 text-base">玩家：{{ nickname }}</span>
+          <span class="font-extrabold text-gray-700 text-base">積分：{{ myScore }} 分</span>
+        </div>
+
+        <div class="mb-4">
+          <div class="flex justify-between text-sm text-gray-500 font-bold mb-1">
+            <span>第 {{ currentIndex + 1 }} 題 / 共 {{ questions.length }} 題</span>
+          </div>
+          <h3 class="text-xl font-extrabold text-gray-800 mb-3">{{ currentQuestion.question }}</h3>
+          
+          <div v-if="currentQuestion.image" class="mb-4 w-full flex justify-center">
+            <img :src="currentQuestion.image" alt="題目圖片" class="w-full max-h-56 rounded-xl shadow border object-contain">
+          </div>
+
+          <!-- 選項清單 -->
+          <div class="flex flex-col gap-3">
+            <button v-for="(opt, idx) in [currentQuestion.option_a, currentQuestion.option_b, currentQuestion.option_c, currentQuestion.option_d]" :key="idx" 
+                    @click="submitAnswer(idx)"
+                    :disabled="submitted"
+                    :class="[
+                      getOptionClass(idx),
+                      submitted ? 'cursor-not-allowed' : 'hover:bg-pink-100'
+                    ]"
+                    class="p-4 rounded-xl font-bold text-left text-lg border-2 transition shadow-sm flex justify-between items-center">
+              <span>{{ ['A', 'B', 'C', 'D'][idx] }}. {{ opt }}</span>
+              <span v-if="submitted">
+                <span v-if="isThisCorrect(idx)" class="text-green-600 text-xl">✅</span>
+                <span v-else-if="selectedOption === idx" class="text-red-500 text-xl">❌</span>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 答對錯提示與下一題按鈕 -->
+        <div v-if="submitted" class="mt-4 text-center">
+          <div class="p-3 rounded-xl bg-pink-50 border border-pink-200 mb-3 font-bold text-lg">
+            <span v-if="isCorrect" class="text-green-600">🎉 答對了！獲得 100 分！</span>
+            <span v-else class="text-red-500">❌ 答錯囉！正確答案是 {{ getCorrectLetter() }}</span>
+          </div>
+          <button @click="nextQuestion" class="w-full bg-pink-500 hover:bg-pink-600 text-white py-3 rounded-xl font-bold text-lg shadow-lg transition">
+            {{ currentIndex + 1 < questions.length ? '下一題 ➡️' : '查看最終成績 🏆' }}
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    const SUPABASE_URL = 'https://qpqdpesalezkhdxupsyh.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable__lE9VwdNJUzNwVqURD5I7w_PJCf6CSs';
+    const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    createApp({
+      setup() {
+        const inputName = ref('');
+        const nickname = ref(localStorage.getItem('solo_wedding_name') || '');
+        const playerId = ref(localStorage.getItem('solo_wedding_pid') || '');
+        const joined = ref(!!playerId.value);
+
+        const questions = ref([]);
+        const currentIndex = ref(0);
+        const myScore = ref(0);
+        const isFinished = ref(false);
+
+        const selectedOption = ref(null);
+        const submitted = ref(false);
+        const isCorrect = ref(false);
+
+        const currentQuestion = computed(() => {
+          if (questions.value.length > 0 && currentIndex.value < questions.value.length) {
+            return questions.value[currentIndex.value];
+          }
+          return null;
+        });
+
+        // 載入題庫
+        const fetchQuestions = async () => {
+          let { data } = await db.from('questions').select('*').order('id', { ascending: true });
+          if (data && data.length > 0) {
+            questions.value = data;
+          }
+        };
+
+        onMounted(async () => {
+          await fetchQuestions();
+          if (playerId.value && nickname.value) {
+            joined.value = true;
+          }
+        });
+
+        const joinGame = async () => {
+          if (!inputName.value.trim()) return alert('請輸入名字');
+          const id = 'SOLO_' + Math.random().toString(36).substring(2, 9);
+          
+          // 可選擇性同步寫入 players 表格，讓主計分板也能看到獨立闖關的玩家
+          await db.from('players').insert([{ id, name: inputName.value.trim(), score: 0 }]);
+
+          localStorage.setItem('solo_wedding_pid', id);
+          localStorage.setItem('solo_wedding_name', inputName.value.trim());
+          playerId.value = id;
+          nickname.value = inputName.value.trim();
+          joined.value = true;
+        };
+
+        const submitAnswer = (idx) => {
+          if (submitted.value || !currentQuestion.value) return;
+          selectedOption.value = idx;
+          submitted.value = true;
+
+          const mapOpt = ['OptionA', 'OptionB', 'OptionC', 'OptionD'];
+          if (mapOpt[idx] === currentQuestion.value.answer) {
+            isCorrect.value = true;
+            myScore.value += 100; // 每題固定 100 分或自訂分數
+          } else {
+            isCorrect.value = false;
+          }
+
+          // 即時更新後端分數
+          if (playerId.value) {
+            db.from('players').update({ score: myScore.value }).eq('id', playerId.value);
+          }
+        };
+
+        const isThisCorrect = (idx) => {
+          if (!currentQuestion.value) return false;
+          const mapOpt = ['OptionA', 'OptionB', 'OptionC', 'OptionD'];
+          return mapOpt[idx] === currentQuestion.value.answer;
+        };
+
+        const getCorrectLetter = () => {
+          if (!currentQuestion.value) return '';
+          const ans = currentQuestion.value.answer; // 例如 'OptionA'
+          const map = { 'OptionA': 'A', 'OptionB': 'B', 'OptionC': 'C', 'OptionD': 'D' };
+          return map[ans] || '';
+        };
+
+        const getOptionClass = (idx) => {
+          if (!submitted.value) {
+            return 'bg-white border-pink-200 text-gray-700';
+          }
+          if (isThisCorrect(idx)) {
+            return 'bg-green-100 border-green-500 text-green-800';
+          }
+          if (selectedOption.value === idx) {
+            return 'bg-red-100 border-red-500 text-red-800';
+          }
+          return 'bg-white border-gray-200 text-gray-400 opacity-60';
+        };
+
+        const nextQuestion = () => {
+          if (currentIndex.value + 1 < questions.value.length) {
+            currentIndex.value++;
+            selectedOption.value = null;
+            submitted.value = false;
+            isCorrect.value = false;
+          } else {
+            isFinished.value = true;
+          }
+        };
+
+        const restartGame = () => {
+          currentIndex.value = 0;
+          myScore.value = 0;
+          isFinished.value = false;
+          selectedOption.value = null;
+          submitted.value = false;
+          isCorrect.value = false;
+        };
+
+        return {
+          inputName, nickname, joined, questions, currentIndex, myScore, isFinished,
+          currentQuestion, selectedOption, submitted, isCorrect,
+          joinGame, submitAnswer, isThisCorrect, getCorrectLetter, getOptionClass, nextQuestion, restartGame
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
