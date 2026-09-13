@@ -23,6 +23,7 @@
           <p class="font-bold mb-1">💡 闖關說明：</p>
           <p>• 總共有 {{ questions.length }} 道題目。</p>
           <p>• 點選選項後即時揭曉答案並累積積分！</p>
+          <p>• 重新整理或重來不會洗掉歷史累計記錄。</p>
         </div>
 
         <input v-model="inputName" type="text" placeholder="例如：林小美 (第3桌)" class="w-full border-2 border-pink-200 p-3 rounded-xl mb-4 text-center text-lg focus:outline-none focus:border-pink-500">
@@ -34,9 +35,15 @@
         <div class="text-6xl mb-4">🏆</div>
         <h2 class="text-3xl font-extrabold text-pink-600 mb-2">闖關成功！</h2>
         <p class="text-gray-600 text-lg mb-4">謝謝 <span class="font-bold text-pink-600">{{ nickname }}</span> 的熱情參與！</p>
-        <div class="text-3xl font-extrabold text-pink-500 bg-pink-50 p-6 rounded-2xl border-2 border-pink-200 mb-6">
+        
+        <div class="text-3xl font-extrabold text-pink-500 bg-pink-50 p-6 rounded-2xl border-2 border-pink-200 mb-4">
           你的最終得分：{{ myScore }} 分
         </div>
+
+        <p v-if="timeSpentStr" class="text-gray-500 font-bold mb-6 text-sm">
+          ⏱️ 挑戰總耗時：{{ timeSpentStr }}
+        </p>
+
         <button @click="restartGame" class="w-full bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-bold text-lg shadow">🔄 重新挑戰</button>
       </div>
 
@@ -103,12 +110,14 @@
         const inputName = ref('');
         const nickname = ref(localStorage.getItem('solo_wedding_name') || '');
         const playerId = ref(localStorage.getItem('solo_wedding_pid') || '');
-        const joined = ref(!!playerId.value);
+        const joined = ref(false);
 
         const questions = ref([]);
         const currentIndex = ref(0);
         const myScore = ref(0);
         const isFinished = ref(false);
+        const startTime = ref(null);
+        const timeSpentStr = ref('');
 
         const selectedOption = ref(null);
         const submitted = ref(false);
@@ -121,36 +130,59 @@
           return null;
         });
 
-        // 載入題庫
-        const fetchQuestions = async () => {
-          let { data } = await db.from('questions').select('*').order('id', { ascending: true });
-          if (data && data.length > 0) {
-            questions.value = data;
-          }
-        };
-
+        // 載入題庫並檢查本地快取與同步資料庫狀態
         onMounted(async () => {
-          await fetchQuestions();
+          let { data: qData } = await db.from('questions').select('*').order('id', { ascending: true });
+          if (qData && qData.length > 0) {
+            questions.value = qData;
+          }
+
           if (playerId.value && nickname.value) {
-            joined.value = true;
+            // 從資料庫撈回該玩家的最新分數，防止重新整理洗掉
+            const { data, error } = await db
+              .from('players')
+              .select('*')
+              .eq('id', playerId.value)
+              .single();
+              
+            if (data) {
+              myScore.value = data.score || 0;
+              inputName.value = data.name || nickname.value;
+              joined.value = true;
+              startTime.value = Date.now(); // 重新整理後重計當次作答時間
+            } else {
+              // 若資料庫查無此 ID，清除本地舊快取
+              localStorage.removeItem('solo_wedding_pid');
+              localStorage.removeItem('solo_wedding_name');
+              playerId.value = '';
+              nickname.value = '';
+            }
           }
         });
 
         const joinGame = async () => {
           if (!inputName.value.trim()) return alert('請輸入名字');
-          const id = 'SOLO_' + Math.random().toString(36).substring(2, 9);
           
-          // 可選擇性同步寫入 players 表格，讓主計分板也能看到獨立闖關的玩家
-          await db.from('players').insert([{ id, name: inputName.value.trim(), score: 0 }]);
+          let id = playerId.value;
+          if (!id) {
+            id = 'SOLO_' + Math.random().toString(36).substring(2, 9);
+            playerId.value = id;
+          }
+          
+          startTime.value = Date.now();
+          nickname.value = inputName.value.trim();
+
+          // 使用 upsert 確保資料不被覆蓋洗掉
+          await db.from('players').upsert([
+            { id: id, name: nickname.value, score: myScore.value }
+          ]);
 
           localStorage.setItem('solo_wedding_pid', id);
-          localStorage.setItem('solo_wedding_name', inputName.value.trim());
-          playerId.value = id;
-          nickname.value = inputName.value.trim();
+          localStorage.setItem('solo_wedding_name', nickname.value);
           joined.value = true;
         };
 
-          const submitAnswer = async (idx) => {
+        const submitAnswer = async (idx) => {
           if (submitted.value || !currentQuestion.value) return;
           selectedOption.value = idx;
           submitted.value = true;
@@ -163,18 +195,12 @@
             isCorrect.value = false;
           }
 
-          // 即時更新後端分數並加上錯誤檢查
+          // 即時更新後端分數
           if (playerId.value) {
-            const { error } = await db
+            await db
               .from('players')
               .update({ score: myScore.value })
               .eq('id', playerId.value);
-            
-            if (error) {
-              console.error('更新分數失敗：', error.message);
-            } else {
-              console.log('分數更新成功，目前分數：', myScore.value);
-            }
           }
         };
 
@@ -186,7 +212,7 @@
 
         const getCorrectLetter = () => {
           if (!currentQuestion.value) return '';
-          const ans = currentQuestion.value.answer; // 例如 'OptionA'
+          const ans = currentQuestion.value.answer;
           const map = { 'OptionA': 'A', 'OptionB': 'B', 'OptionC': 'C', 'OptionD': 'D' };
           return map[ans] || '';
         };
@@ -204,14 +230,29 @@
           return 'bg-white border-gray-200 text-gray-400 opacity-60';
         };
 
-        const nextQuestion = () => {
+        const nextQuestion = async () => {
           if (currentIndex.value + 1 < questions.value.length) {
             currentIndex.value++;
             selectedOption.value = null;
             submitted.value = false;
             isCorrect.value = false;
           } else {
+            // 完整通關結算
             isFinished.value = true;
+            
+            if (startTime.value && playerId.value) {
+              const totalSeconds = Math.floor((Date.now() - startTime.value) / 1000);
+              timeSpentStr.value = `${totalSeconds} 秒`;
+              
+              // 將最終分數與完成耗時（存入 session_id）同步寫入資料庫
+              await db
+                .from('players')
+                .update({ 
+                  score: myScore.value,
+                  session_id: `耗時 ${totalSeconds} 秒`
+                })
+                .eq('id', playerId.value);
+            }
           }
         };
 
@@ -222,10 +263,12 @@
           selectedOption.value = null;
           submitted.value = false;
           isCorrect.value = false;
+          startTime.value = Date.now();
+          timeSpentStr.value = '';
         };
 
         return {
-          inputName, nickname, joined, questions, currentIndex, myScore, isFinished,
+          inputName, nickname, joined, questions, currentIndex, myScore, isFinished, timeSpentStr,
           currentQuestion, selectedOption, submitted, isCorrect,
           joinGame, submitAnswer, isThisCorrect, getCorrectLetter, getOptionClass, nextQuestion, restartGame
         };
